@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from burp import IBurpExtender
 from burp import IHttpListener
 from burp import ITab
@@ -20,7 +21,81 @@ ELASTIC_HELP = """
 <html>
 <body style='font-family: Arial, sans-serif; margin: 30px 40px; background-color: #1e1e1e; color: #d4d4d4;'>
 
-<h1 style='color: #e8912d; border-bottom: 2px solid #e8912d; padding-bottom: 8px;'>Elastico</h1>
+<p style='font-size:13px;'>
+  <a href='#en' style='color:#e8912d;'>English</a> &nbsp;|&nbsp;
+  <a href='#pt' style='color:#e8912d;'>Portugues</a>
+</p>
+
+<hr style='border-color:#333;'/>
+
+<a name='en'></a>
+<h1 style='color: #e8912d; border-bottom: 2px solid #e8912d; padding-bottom: 8px;'>Elastico (EN-US)</h1>
+<p>Burp Suite extension to index HTTP traffic directly into Elasticsearch, enabling analysis and visualization in Kibana.</p>
+<p>Source code: <a href='https://github.com/imgodes/elastico' style='color: #e8912d;'>github.com/imgodes/elastico</a></p>
+
+<h2 style='color: #e8912d; margin-top: 30px;'>How it works</h2>
+<p>The extension intercepts all traffic passing through Burp Proxy and sends each request/response cycle as a JSON document to Elasticsearch.</p>
+<p>Full flow:</p>
+<ol style='line-height: 2;'>
+    <li><b>Interception:</b> Burp calls <code style='background:#2d2d2d; padding:2px 6px; border-radius:3px;'>processHttpMessage</code> on every HTTP response passing through the Proxy.</li>
+    <li><b>Extraction:</b> Request and response data are extracted from <code style='background:#2d2d2d; padding:2px 6px; border-radius:3px;'>messageInfo</code> using Burp API helpers.</li>
+    <li><b>Serialization:</b> Data is assembled into a hierarchical JSON document with fields like host, method, URL, headers, and body.</li>
+    <li><b>Queue:</b> The document is pushed into an internal <code style='background:#2d2d2d; padding:2px 6px; border-radius:3px;'>Queue</code> without blocking the Proxy.</li>
+    <li><b>Indexing:</b> A worker thread consumes the queue in parallel and sends each document to Elasticsearch via HTTP POST.</li>
+    <li><b>Visualization:</b> Documents are available in Kibana for queries, dashboards, and traffic analysis.</li>
+</ol>
+
+<h2 style='color: #e8912d; margin-top: 30px;'>Configuration</h2>
+<p>In the <b>Settings</b> tab, configure:</p>
+<ul style='line-height: 2;'>
+    <li><b>Host:</b> Elasticsearch address (default: localhost)</li>
+    <li><b>Port:</b> Elasticsearch port (default: 9200)</li>
+    <li><b>Index:</b> Index name where documents will be stored (must be lowercase)</li>
+</ul>
+<p>Click <b>Save</b> to apply. Subsequent requests will be indexed using the new configuration.</p>
+
+<h2 style='color: #e8912d; margin-top: 30px;'>Deploy ELK Stack</h2>
+<p>Recommended setup using Docker. Official docs:</p>
+<p><a href='https://www.elastic.co/docs/deploy-manage/deploy/self-managed/install-elasticsearch-docker-basic' style='color: #e8912d;'>elastic.co/docs - Install Elasticsearch with Docker</a></p>
+<p>For local lab use, run Elasticsearch with security disabled:</p>
+<pre style='background:#2d2d2d; color:#d4d4d4; padding:16px; border-radius:6px; border-left: 3px solid #e8912d; overflow:auto;'>
+docker run --name es01 --net elastic -p 9200:9200 -m 4GB \
+  -e "xpack.security.enabled=false" \
+  -e "xpack.security.http.ssl.enabled=false" \
+  -e "discovery.type=single-node" \
+  -v elasticsearch-data:/usr/share/elasticsearch/data \
+  -d docker.elastic.co/elasticsearch/elasticsearch:9.4.0
+</pre>
+
+<h2 style='color: #e8912d; margin-top: 30px;'>Document structure</h2>
+<pre style='background:#2d2d2d; color:#d4d4d4; padding:16px; border-radius:6px; border-left: 3px solid #e8912d; overflow:auto;'>
+{
+  "timestamp": "2026-05-07T00:00:00",
+  "host": "example.com",
+  "port": 443,
+  "protocol": "https",
+  "http": {
+    "request": {
+      "method": "POST",
+      "url": "https://example.com/api/login",
+      "length": 312,
+      "headers": { "Content-Type": "application/json" },
+      "body": "{...}"
+    },
+    "response": {
+      "status": 200,
+      "length": 1024,
+      "headers": { "Content-Type": "application/json" },
+      "body": "{...}"
+    }
+  }
+}
+</pre>
+
+<hr style='border-color:#333; margin-top:40px;'/>
+
+<a name='pt'></a>
+<h1 style='color: #e8912d; border-bottom: 2px solid #e8912d; padding-bottom: 8px;'>Elastico (PT-BR)</h1>
 <p>Extensao do Burp Suite para indexar trafego HTTP diretamente no Elasticsearch, permitindo analise e visualizacao no Kibana.</p>
 <p>Codigo fonte: <a href='https://github.com/imgodes/elastico' style='color: #e8912d;'>github.com/imgodes/elastico</a></p>
 
@@ -50,7 +125,7 @@ ELASTIC_HELP = """
 <p><a href='https://www.elastic.co/docs/deploy-manage/deploy/self-managed/install-elasticsearch-docker-basic' style='color: #e8912d;'>elastic.co/docs - Install Elasticsearch with Docker</a></p>
 <p>Importante: suba o Elasticsearch com seguranca desabilitada para uso em lab local:</p>
 <pre style='background:#2d2d2d; color:#d4d4d4; padding:16px; border-radius:6px; border-left: 3px solid #e8912d; overflow:auto;'>
-docker run --name es01 --net elastic -p 9200:9200 -m 2GB \
+docker run --name es01 --net elastic -p 9200:9200 -m 4GB \
   -e "xpack.security.enabled=false" \
   -e "xpack.security.http.ssl.enabled=false" \
   -e "discovery.type=single-node" \
