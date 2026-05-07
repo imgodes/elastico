@@ -3,7 +3,7 @@ from burp import IBurpExtender
 from burp import IHttpListener
 from burp import ITab
 from javax import swing
-from javax.swing import JPanel, JLabel, JTextField, JButton, JTabbedPane, JEditorPane, JScrollPane
+from javax.swing import JPanel, JLabel, JTextField, JButton, JToggleButton, JTabbedPane, JEditorPane, JScrollPane
 from java.awt import GridLayout, BorderLayout, FlowLayout
 from threading import Thread
 from Queue import Queue
@@ -53,6 +53,12 @@ ELASTIC_HELP = """
     <li><b>Index:</b> Index name where documents will be stored (must be lowercase)</li>
 </ul>
 <p>Click <b>Save</b> to apply. Subsequent requests will be indexed using the new configuration.</p>
+
+<h2 style='color: #e8912d; margin-top: 30px;'>Live Logging</h2>
+<p>Live Logging is <b>disabled by default</b>. Toggle it in the Settings tab to start or stop real-time indexing of traffic passing through Burp Proxy.</p>
+
+<h2 style='color: #e8912d; margin-top: 30px;'>Send bulk logs</h2>
+<p>Click <b>Send bulk logs</b> to export the entire Burp Proxy history to Elasticsearch in one shot. This runs in the background and does not require Live Logging to be enabled.</p>
 
 <h2 style='color: #e8912d; margin-top: 30px;'>Deploy ELK Stack</h2>
 <p>Recommended setup using Docker. Official docs:</p>
@@ -120,6 +126,12 @@ docker run --name es01 --net elastic -p 9200:9200 -m 4GB \
 </ul>
 <p>Clique em <b>Salvar</b> para aplicar. As proximas requests ja serao indexadas com a nova configuracao.</p>
 
+<h2 style='color: #e8912d; margin-top: 30px;'>Live Logging</h2>
+<p>O Live Logging e <b>desabilitado por padrao</b>. Use o toggle na aba Settings para ligar ou desligar a indexacao em tempo real do trafego que passa pelo Burp Proxy.</p>
+
+<h2 style='color: #e8912d; margin-top: 30px;'>Send bulk logs</h2>
+<p>Clique em <b>Send bulk logs</b> para exportar todo o historico do Proxy do Burp para o Elasticsearch de uma vez. Roda em background e nao exige que o Live Logging esteja ativado.</p>
+
 <h2 style='color: #e8912d; margin-top: 30px;'>Deploy do ELK</h2>
 <p>Recomenda-se subir o Elasticsearch e Kibana via Docker. Instrucoes oficiais:</p>
 <p><a href='https://www.elastic.co/docs/deploy-manage/deploy/self-managed/install-elasticsearch-docker-basic' style='color: #e8912d;'>elastic.co/docs - Install Elasticsearch with Docker</a></p>
@@ -169,6 +181,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         callbacks.registerHttpListener(self)
         self._helpers = callbacks.getHelpers()
 
+        self.live_logging = False
         self.initGui()
         self.callbacks.addSuiteTab(self)
         print("[*] Elastic Exporter carregado.")
@@ -188,7 +201,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         settingsWrapper = JPanel(BorderLayout())
 
         # Form compacto
-        formPanel = JPanel(GridLayout(4, 2, 5, 5))
+        formPanel = JPanel(GridLayout(6, 2, 5, 5))
 
         formPanel.add(JLabel("Host:"))
         self.hostField = JTextField(ELASTIC_HOST, 20)
@@ -205,6 +218,14 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         formPanel.add(JLabel(""))
         saveButton = JButton("Salvar", actionPerformed=self.saveConfig)
         formPanel.add(saveButton)
+
+        formPanel.add(JLabel("Live Logging:"))
+        self.liveLoggingBtn = JToggleButton("Desabilitado", actionPerformed=self.toggleLiveLogging)
+        formPanel.add(self.liveLoggingBtn)
+
+        formPanel.add(JLabel(""))
+        bulkBtn = JButton("Send bulk logs", actionPerformed=self.sendBulkLogs)
+        formPanel.add(bulkBtn)
 
         settingsWrapper.add(formPanel, BorderLayout.NORTH)
         self.tabbedPane.addTab("Settings", settingsWrapper)
@@ -223,6 +244,37 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         ELASTIC_URL = "http://"+ELASTIC_HOST+":"+ELASTIC_PORT+"/"+ELASTIC_INDEX+"/_doc"
         print "[*] Config atualizada: %s" % ELASTIC_URL
 
+    def toggleLiveLogging(self, event):
+        self.live_logging = self.liveLoggingBtn.isSelected()
+        if self.live_logging:
+            self.liveLoggingBtn.setText("Habilitado")
+            print("[*] Live Logging habilitado.")
+        else:
+            self.liveLoggingBtn.setText("Desabilitado")
+            print("[*] Live Logging desabilitado.")
+
+    def sendBulkLogs(self, event):
+        def run():
+            history = self.callbacks.getProxyHistory()
+            total = len(history)
+            print("[*] Iniciando bulk export: %d itens." % total)
+            sent = 0
+            for item in history:
+                try:
+                    responseRaw = item.getResponse()
+                    if responseRaw is None:
+                        continue
+                    requestRaw = item.getRequest()
+                    requestInfo = self._helpers.analyzeRequest(item)
+                    responseInfo = self._helpers.analyzeResponse(responseRaw)
+                    jsonLogLine = self.buildJson(item, requestInfo, responseInfo, requestRaw, responseRaw)
+                    self.queue.put(jsonLogLine)
+                    sent += 1
+                except Exception as e:
+                    print("[!] Erro ao processar item: %s" % str(e))
+            print("[*] Bulk export: %d/%d itens enfileirados." % (sent, total))
+        Thread(target=run).start()
+
     def getTabCaption(self):
         return("Elastico")
     
@@ -230,7 +282,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         return self.tab
     
     def processHttpMessage(self, toolFlag, messageIsRequest, messageInfo):
-        if not messageIsRequest:
+        if not messageIsRequest and self.live_logging:
             requestRaw = messageInfo.getRequest()
             responseRaw = messageInfo.getResponse()
             requestInfo = self._helpers.analyzeRequest(messageInfo)
