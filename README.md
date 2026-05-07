@@ -33,7 +33,6 @@ FROM burplogs*
 | STATS total = COUNT(*) BY host, http.request.method, http.response.status
 | SORT host ASC, total DESC
 ```
-![](./img/elkb100-4.png)
 
 ### Cache control analysis
 
@@ -185,7 +184,6 @@ FROM burplogs*
 | STATS total = COUNT(*) BY host, http.request.method, http.response.status
 | SORT host ASC, total DESC
 ```
-![](./img/elkb100-4.png)
 
 
 ### Controle de cache
