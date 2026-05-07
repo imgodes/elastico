@@ -4,11 +4,11 @@
 
 # About Elastico
 
-Burp Suite extension to index HTTP traffic directly into Elasticsearch, enabling analysis and visualization in Kibana.
+Burp Suite extension to index HTTP traffic directly into Elasticsearch and/or Splunk, enabling analysis and visualization in Kibana or Splunk dashboards.
 
 ## How it works
 
-The extension intercepts all traffic passing through Burp's Proxy and sends each request/response cycle as a JSON document to Elasticsearch.
+The extension intercepts all traffic passing through Burp's Proxy and sends each request/response cycle as a JSON document to the selected backend(s).
 
 The full flow:
 
@@ -16,11 +16,11 @@ The full flow:
 2. **Extraction:** Request and response data are extracted from `messageInfo` using Burp's API helpers.
 3. **Serialization:** Data is assembled into a hierarchical JSON document with fields like host, method, URL, headers, and body.
 4. **Queue:** The document is pushed into an internal queue (`Queue`) without blocking the Proxy.
-5. **Indexing:** A worker thread consumes the queue in parallel and sends each document to Elasticsearch via HTTP POST.
-6. **Visualization:** Documents are available in Kibana for queries, dashboards, and traffic analysis.
+5. **Dispatch:** A worker thread consumes the queue and sends each document to the selected backend(s) via HTTP POST.
+6. **Visualization:** Documents are available in Kibana or Splunk for queries, dashboards, and traffic analysis.
 
 ```
-Burp Proxy --> processHttpMessage --> Queue --> worker thread --> Elasticsearch --> Kibana
+Burp Proxy --> processHttpMessage --> Queue --> worker thread --> Elasticsearch / Splunk / Both
 ```
 
 You can build highly customized detection rules and analysis. Here are some simple examples:
@@ -59,7 +59,7 @@ FROM burplogs*
 
 - Burp Suite (Community or Pro)
 - Jython Standalone JAR: https://www.jython.org/download
-- Elasticsearch + Kibana (see Deploy section)
+- Elasticsearch + Kibana (see Deploy section), and/or Splunk (Community or Enterprise)
 
 ## Installation
 
@@ -71,11 +71,22 @@ FROM burplogs*
 
 In the **Settings** tab, configure:
 
+**Elasticsearch**
+
 - **Host:** Elasticsearch address (default: `localhost`)
 - **Port:** Elasticsearch port (default: `9200`)
 - **Index:** Index name where documents will be stored (must be lowercase)
 
-Click **Save** to apply. Subsequent requests will be indexed using the new configuration.
+**Splunk HEC**
+
+- **Splunk Host:** Splunk instance address (default: `localhost`)
+- **Splunk Port:** HEC port (default: `8088`)
+- **Splunk Token:** HEC token — obtain it at Settings > Data Inputs > HTTP Event Collector in Splunk Web
+- **Splunk Index:** Destination index (default: `main`)
+
+**Backend:** choose `Elasticsearch`, `Splunk`, or `Both` to control where logs are sent.
+
+Click **Save** to apply immediately, no restart required.
 
 ## Deploy ELK Stack
 
@@ -131,7 +142,37 @@ Access Kibana at `http://localhost:5601`.
 }
 ```
 
+## Deploy Splunk
+
+For local lab use, run Splunk via Docker:
+
+```bash
+docker run -d -p 8000:8000 -p 8088:8088 \
+  -e SPLUNK_START_ARGS=--accept-license \
+  -e SPLUNK_PASSWORD=changeme \
+  --name splunk splunk/splunk:latest
+```
+
+Access Splunk Web at `http://localhost:8000`.
+
+**Configuring HEC:**
+
+1. Go to **Settings > Data Inputs > HTTP Event Collector**.
+2. Click **Global Settings**, disable SSL (required for lab use — see note below), and save.
+3. Click **New Token**, set source type to `_json`, choose an index, and copy the generated token.
+4. Paste the token into the Splunk Token field in the Elastico Settings tab.
+
+> **SSL note:** Splunk HEC enables SSL by default. The extension sends plain HTTP, so you must disable SSL in Global Settings. After disabling, restart Splunk and verify with:
+> ```bash
+> curl http://localhost:8088/services/collector/event \
+>   -H "Authorization: Splunk <your-token>" \
+>   -d '{"event": "test"}'
+> ```
+> Expected response: `{"text":"Success","code":0}`
+
 ## Verifying indexing
+
+**Elasticsearch:**
 
 ```bash
 # Document count in the index
@@ -141,9 +182,11 @@ curl -s http://localhost:9200/<your-index>/_count
 curl -s "http://localhost:9200/<your-index>/_search?size=3&sort=_id:desc"
 ```
 
-## Built with
+**Splunk:**
 
-This extension was built from scratch with no prior Burp extension experience, using Claude as a learning assistant with a structured challenge-based approach.
+```
+index=main sourcetype=_json
+```
 
 ## License
 
@@ -155,11 +198,11 @@ MIT
 
 [English README](#about-elastico) | [README em Português](#sobre-o-elastico)
 
-Extensão do Burp Suite para indexar tráfego HTTP diretamente no Elasticsearch, permitindo análise e visualização no Kibana.
+Extensão do Burp Suite para indexar tráfego HTTP diretamente no Elasticsearch e/ou Splunk, permitindo análise e visualização no Kibana ou dashboards do Splunk.
 
 ## Como funciona
 
-A extensão intercepta todo o tráfego que passa pelo Proxy do Burp e envia cada ciclo request/response como um documento JSON para o Elasticsearch.
+A extensão intercepta todo o tráfego que passa pelo Proxy do Burp e envia cada ciclo request/response como um documento JSON para o(s) backend(s) selecionado(s).
 
 O fluxo completo:
 
@@ -167,11 +210,11 @@ O fluxo completo:
 2. **Extração:** os dados da request e response são extraídos do `messageInfo` usando os helpers da API do Burp.
 3. **Serialização:** os dados são montados em um documento JSON hierárquico com campos como host, método, URL, headers e body.
 4. **Fila:** o documento é empurrado para uma fila interna (`Queue`) sem bloquear o Proxy.
-5. **Indexação:** uma thread worker consome a fila em paralelo e envia cada documento para o Elasticsearch via HTTP POST.
-6. **Visualização:** os documentos ficam disponíveis no Kibana para queries, dashboards e análise do tráfego capturado.
+5. **Despacho:** uma thread worker consome a fila e envia cada documento para o(s) backend(s) selecionado(s) via HTTP POST.
+6. **Visualização:** os documentos ficam disponíveis no Kibana ou Splunk para queries, dashboards e análise do tráfego capturado.
 
 ```
-Burp Proxy --> processHttpMessage --> Queue --> worker thread --> Elasticsearch --> Kibana
+Burp Proxy --> processHttpMessage --> Queue --> worker thread --> Elasticsearch / Splunk / Both
 ```
 
 Podemos fazer diversas coisas interessantes como criar regras de detecção extremamente customizadas. Veja alguns exemplos simples:
@@ -211,7 +254,7 @@ FROM burplogs*
 
 - Burp Suite (Community ou Pro)
 - Jython Standalone JAR: https://www.jython.org/download
-- Elasticsearch + Kibana (ver seção Deploy)
+- Elasticsearch + Kibana (ver seção Deploy) e/ou Splunk (Community ou Enterprise)
 
 ## Instalação
 
@@ -223,11 +266,22 @@ FROM burplogs*
 
 Na aba **Settings**, configure:
 
+**Elasticsearch**
+
 - **Host:** endereço do Elasticsearch (default: `localhost`)
 - **Port:** porta do Elasticsearch (default: `9200`)
 - **Index:** nome do índice onde os documentos serão armazenados (deve ser lowercase)
 
-Clique em **Salvar** para aplicar. As próximas requests já serão indexadas com a nova configuração.
+**Splunk HEC**
+
+- **Splunk Host:** endereço da instância Splunk (default: `localhost`)
+- **Splunk Port:** porta do HEC (default: `8088`)
+- **Splunk Token:** token HEC - obtenha em Settings > Data Inputs > HTTP Event Collector no Splunk Web
+- **Splunk Index:** índice de destino (default: `main`)
+
+**Backend:** escolha `Elasticsearch`, `Splunk` ou `Both` para controlar para onde os logs são enviados.
+
+Clique em **Salvar** para aplicar imediatamente, sem reiniciar.
 
 ## Deploy do ELK
 
@@ -283,7 +337,37 @@ Acesse o Kibana em `http://localhost:5601`.
 }
 ```
 
+## Deploy do Splunk
+
+Para uso em lab local, suba o Splunk via Docker:
+
+```bash
+docker run -d -p 8000:8000 -p 8088:8088 \
+  -e SPLUNK_START_ARGS=--accept-license \
+  -e SPLUNK_PASSWORD=changeme \
+  --name splunk splunk/splunk:latest
+```
+
+Acesse o Splunk Web em `http://localhost:8000`.
+
+**Configurando o HEC:**
+
+1. Vá em **Settings > Data Inputs > HTTP Event Collector**.
+2. Clique em **Global Settings**, desabilite o SSL (necessário para lab - veja nota abaixo) e salve.
+3. Clique em **New Token**, defina o source type como `_json`, escolha um índice e copie o token gerado.
+4. Cole o token no campo Splunk Token na aba Settings do Elastico.
+
+> **Nota sobre SSL:** o HEC do Splunk habilita SSL por padrão. A extensão envia HTTP puro, então é necessário desabilitar o SSL nas Global Settings. Após desabilitar, reinicie o Splunk e verifique com:
+> ```bash
+> curl http://localhost:8088/services/collector/event \
+>   -H "Authorization: Splunk <seu-token>" \
+>   -d '{"event": "test"}'
+> ```
+> Resposta esperada: `{"text":"Success","code":0}`
+
 ## Verificando a indexação
+
+**Elasticsearch:**
 
 ```bash
 # Contagem de documentos no índice
@@ -291,6 +375,12 @@ curl -s http://localhost:9200/<seu-index>/_count
 
 # Últimos documentos indexados
 curl -s "http://localhost:9200/<seu-index>/_search?size=3&sort=_id:desc"
+```
+
+**Splunk:**
+
+```
+index=main sourcetype=_json
 ```
 
 ## Como foi construído
