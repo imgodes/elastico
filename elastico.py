@@ -5,6 +5,7 @@ from burp import ITab
 from javax import swing
 from javax.swing import JPanel, JLabel, JTextField, JButton, JToggleButton, JTabbedPane, JEditorPane, JScrollPane, JComboBox
 from java.awt import GridLayout, BorderLayout, FlowLayout
+from java.util import UUID
 from threading import Thread
 from Queue import Queue
 import json
@@ -22,7 +23,7 @@ SPLUNK_HOST  = "localhost"
 SPLUNK_PORT  = "8088"
 SPLUNK_TOKEN = ""
 SPLUNK_INDEX = "main"
-SPLUNK_URL   = "http://" + SPLUNK_HOST + ":" + SPLUNK_PORT + "/services/collector/event"
+SPLUNK_URL   = "https://" + SPLUNK_HOST + ":" + SPLUNK_PORT + "/services/collector/event"
 
 SELECTED_BACKEND = "Elasticsearch"
 
@@ -244,7 +245,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
 
         settingsWrapper = JPanel(BorderLayout())
 
-        formPanel = JPanel(GridLayout(12, 2, 5, 5))
+        formPanel = JPanel(GridLayout(13, 2, 5, 5))
 
         formPanel.add(JLabel("Host:"))
         self.hostField = JTextField(ELASTIC_HOST, 20)
@@ -293,6 +294,10 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         bulkBtn = JButton("Send bulk logs", actionPerformed=self.sendBulkLogs)
         formPanel.add(bulkBtn)
 
+        formPanel.add(JLabel(""))
+        resetBtn = JButton("Reset marks", actionPerformed=self.resetMarks)
+        formPanel.add(resetBtn)
+
         settingsWrapper.add(formPanel, BorderLayout.NORTH)
         self.tabbedPane.addTab("Settings", settingsWrapper)
 
@@ -311,7 +316,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         SPLUNK_PORT = self.splunkPortField.getText()
         SPLUNK_TOKEN = self.splunkTokenField.getText()
         SPLUNK_INDEX = self.splunkIndexField.getText()
-        SPLUNK_URL = "http://" + SPLUNK_HOST + ":" + SPLUNK_PORT + "/services/collector/event"
+        SPLUNK_URL = "https://" + SPLUNK_HOST + ":" + SPLUNK_PORT + "/services/collector/event"
         SELECTED_BACKEND = str(self.backendCombo.getSelectedItem())
         print("[*] Config atualizada: Elastic=%s | Splunk=%s | Backend=%s" % (ELASTIC_URL, SPLUNK_URL, SELECTED_BACKEND))
 
@@ -324,26 +329,47 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
             self.liveLoggingBtn.setText("Desabilitado")
             print("[*] Live Logging desabilitado.")
 
+    def resetMarks(self, event):
+        def run():
+            history = self.callbacks.getProxyHistory()
+            cleared = 0
+            for item in history:
+                try:
+                    comment = item.getComment()
+                    if comment and comment.startswith("siem:"):
+                        item.setComment("")
+                        cleared += 1
+                except Exception as e:
+                    print("[!] Erro ao limpar marca: %s" % str(e))
+            print("[*] Reset marks: %d marcas removidas." % cleared)
+        Thread(target=run).start()
+
     def sendBulkLogs(self, event):
         def run():
             history = self.callbacks.getProxyHistory()
             total = len(history)
             print("[*] Iniciando bulk export: %d itens." % total)
             sent = 0
+            skipped = 0
             for item in history:
                 try:
+                    comment = item.getComment()
+                    if comment and comment.startswith("siem:"):
+                        skipped += 1
+                        continue
                     responseRaw = item.getResponse()
                     if responseRaw is None:
                         continue
                     requestRaw = item.getRequest()
                     requestInfo = self._helpers.analyzeRequest(item)
                     responseInfo = self._helpers.analyzeResponse(responseRaw)
-                    jsonLogLine = self.buildJson(item, requestInfo, responseInfo, requestRaw, responseRaw)
-                    self.queue.put(jsonLogLine)
+                    correlation_id = str(UUID.randomUUID())
+                    jsonLogLine = self.buildJson(item, requestInfo, responseInfo, requestRaw, responseRaw, correlation_id)
+                    self.queue.put((jsonLogLine, item))
                     sent += 1
                 except Exception as e:
                     print("[!] Erro ao processar item: %s" % str(e))
-            print("[*] Bulk export: %d/%d itens enfileirados." % (sent, total))
+            print("[*] Bulk export: %d/%d enfileirados, %d ja indexados (skipped)." % (sent, total, skipped))
         Thread(target=run).start()
 
     def getTabCaption(self):
@@ -358,10 +384,11 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
             responseRaw = messageInfo.getResponse()
             requestInfo = self._helpers.analyzeRequest(messageInfo)
             responseInfo = self._helpers.analyzeResponse(responseRaw)
-            jsonLogLine = self.buildJson(messageInfo, requestInfo, responseInfo, requestRaw, responseRaw)
-            self.queue.put(jsonLogLine)
+            correlation_id = str(UUID.randomUUID())
+            jsonLogLine = self.buildJson(messageInfo, requestInfo, responseInfo, requestRaw, responseRaw, correlation_id)
+            self.queue.put((jsonLogLine, messageInfo))
 
-    def buildJson(self, messageInfo, requestInfo, responseInfo, requestRaw, responseRaw):
+    def buildJson(self, messageInfo, requestInfo, responseInfo, requestRaw, responseRaw, correlation_id):
         timestamp = datetime.datetime.utcnow().isoformat()
         host = messageInfo.getHttpService().getHost()
         port = messageInfo.getHttpService().getPort()
@@ -376,6 +403,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         requestBody = self.buildBodyString(requestRaw, requestInfo)
         responseBody = self.buildBodyString(responseRaw, responseInfo)
         return {
+            "correlation_id": correlation_id,
             "timestamp": timestamp,
             "http": {
                 "request": {
@@ -409,22 +437,26 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         offset = info.getBodyOffset()
         bodyBytes = rawData[offset:]
         try:
-            body = self._helpers.bytesToString(bodyBytes)
-            json.loads(body)
-            return body
+            return self._helpers.bytesToString(bodyBytes)
         except:
-            return self._helpers.bytesToString(bodyBytes).encode('utf-8', errors='replace').decode('utf-8')
+            return None
 
     def processQueue(self):
         while True:
-            nextJsonLine = self.queue.get()
+            logLine, burp_item = self.queue.get()
             if SELECTED_BACKEND == "Splunk":
-                self.sentToSplunk(nextJsonLine)
+                success = self.sentToSplunk(logLine)
             elif SELECTED_BACKEND == "Both":
-                self.sentToElastic(nextJsonLine)
-                self.sentToSplunk(nextJsonLine)
+                ok1 = self.sentToElastic(logLine)
+                ok2 = self.sentToSplunk(logLine)
+                success = ok1 and ok2
             else:
-                self.sentToElastic(nextJsonLine)
+                success = self.sentToElastic(logLine)
+            if success and burp_item is not None:
+                try:
+                    burp_item.setComment("siem:" + logLine["correlation_id"])
+                except Exception as e:
+                    print("[!] Erro ao marcar request: %s" % str(e))
             self.queue.task_done()
 
     def sentToElastic(self, logLine):
@@ -441,38 +473,89 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
                 logLine["http"]["request"]["url"],
                 logLine["http"]["response"]["status"]
             ))
+            return True
         except urllib2.HTTPError as e:
             print("[!] HTTP Error %d: %s" % (e.code, e.read()))
+            return False
         except Exception as e:
             print("[!] Erro: %s" % str(e))
+            return False
 
     def sentToSplunk(self, logLine):
         if not SPLUNK_TOKEN:
             print("[!] Splunk HEC token nao configurado. Skipping.")
             return
+
+        meta = {
+            "correlation_id": logLine["correlation_id"],
+            "timestamp": logLine["timestamp"],
+            "host": logLine["host"],
+            "port": logLine["port"],
+            "protocol": logLine["protocol"],
+            "http": {
+                "request": {k: v for k, v in logLine["http"]["request"].items() if k != "body"},
+                "response": {k: v for k, v in logLine["http"]["response"].items() if k != "body"}
+            }
+        }
+        success = False
         try:
-            envelope = {
+            self._splunkPost(json.dumps({
                 "time": time.time(),
                 "sourcetype": "_json",
                 "index": SPLUNK_INDEX,
-                "event": logLine
-            }
-            data = json.dumps(envelope)
-            req = urllib2.Request(
-                SPLUNK_URL,
-                data,
-                {
-                    "Content-Type": "application/json",
-                    "Authorization": "Splunk " + SPLUNK_TOKEN
-                }
-            )
-            urllib2.urlopen(req, timeout=5)
+                "event": meta
+            }))
             print("[+] Splunk HEC: %s %s -> %d" % (
                 logLine["http"]["request"]["method"],
                 logLine["http"]["request"]["url"],
                 logLine["http"]["response"]["status"]
             ))
+            success = True
         except urllib2.HTTPError as e:
             print("[!] Splunk HTTP Error %d: %s" % (e.code, e.read()))
         except Exception as e:
-            print("[!] Splunk Erro: %s" % str(e))
+            print("[!] Splunk Erro (meta): %s" % str(e))
+
+        for direction in ("request", "response"):
+            body = logLine["http"][direction]["body"]
+            if not body:
+                continue
+            try:
+                if isinstance(body, (dict, list)):
+                    body = json.dumps(body)
+                if len(body) > 200000:
+                    body = body[:200000] + u"\n...[TRUNCATED]"
+                self._splunkPost(json.dumps({
+                    "time": time.time(),
+                    "sourcetype": "burp_body",
+                    "index": SPLUNK_INDEX,
+                    "event": body,
+                    "fields": {
+                        "correlation_id": logLine["correlation_id"],
+                        "direction": direction,
+                        "url": logLine["http"]["request"]["url"],
+                        "host": logLine["host"],
+                        "status": str(logLine["http"]["response"]["status"])
+                    }
+                }))
+            except urllib2.HTTPError as e:
+                print("[!] Splunk HTTP Error %d (body %s): %s" % (e.code, direction, e.read()))
+            except Exception as e:
+                print("[!] Splunk Erro (body %s): %s" % (direction, str(e)))
+
+        return success
+
+    def _splunkPost(self, data):
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib2.Request(
+            SPLUNK_URL,
+            data,
+            {
+                "Content-Type": "application/json",
+                "Authorization": "Splunk " + SPLUNK_TOKEN
+            }
+        )
+        urllib2.urlopen(req, context=ctx, timeout=5)
